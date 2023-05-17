@@ -8,8 +8,8 @@ import {ForkManagement} from "./helpers/ForkManagement.sol";
 abstract contract BaseDeployer is Script, ForkManagement {
   using stdJson for string;
 
-  uint256 deployerPrivateKey;
-  address deployer;
+  uint256 public deployerPrivateKey;
+  address public deployer;
 
   function loadBaseAddresses(string memory json, string memory targetEnv) internal virtual {
     // empty

@@ -6,7 +6,7 @@ import "forge-std/Script.sol";
 contract ForkManagement is Script {
   using stdJson for string;
 
-  function loadJson() internal returns (string memory) {
+  function loadJson() internal view returns (string memory) {
     string memory root = vm.projectRoot();
     string memory path = string(abi.encodePacked(root, "/addresses.json"));
     string memory json = vm.readFile(path);
