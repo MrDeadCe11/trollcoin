@@ -40,6 +40,9 @@ contract Troll is ERC20, Ownable {
     // immunity timer: if you lose a round you are immune from attack for 24 hours.
     mapping(address => uint256) internal immunityTimer;
 
+    //mapping of un-attackable addresses eg. liquidity pools etc.
+    mapping(address => bool) private whitelist;
+
     uint256 internal ANNUAL_INTEREST_RATE;
 
     event Attacked (uint256 warId, uint256 time, address attacker, address defender);
@@ -53,7 +56,7 @@ contract Troll is ERC20, Ownable {
 
     function attack(address _defender , uint256 _amount) public {
 
-        if(msg.sender == _defender){
+        if(msg.sender == _defender || _defender == address(0) || whitelist[_defender] == true){
             revert CannotAttackThisAddress(_defender);
         }
 
@@ -76,7 +79,7 @@ contract Troll is ERC20, Ownable {
           uint256 startTime = block.timestamp;
           // get defenses
     
-          uint256 defenderPool = calculateReward(defenses[_defender]);
+          uint256 defenderPool = calculateReward(defenses[_defender].amount, defenses[_defender].startDefenseTime);
           //create new war
           War memory newWar;
           newWar.id = newWarId;
@@ -99,10 +102,10 @@ contract Troll is ERC20, Ownable {
         war = wars[_warId];
     }
 
-    function calculateReward(Defense memory _defenses)internal view returns(uint256 reward){
-        uint256 dailyInterestRate = ANNUAL_INTEREST_RATE / 365;
-        uint256 daysStaked = (block.timestamp - _defenses.startDefenseTime) / 60 / 60 / 24;
+    function calculateReward(uint256 _amount, uint256 _startTimeStamp)internal view returns(uint256 reward){
+        // uint256 dailyInterestRate = ANNUAL_INTEREST_RATE / 365;
+        uint256 daysStaked = (block.timestamp - _startTimeStamp) / 60 / 60 / 24;
         // Divide by 10,000 to account for the percentage
-        reward = (_defenses.amount * dailyInterestRate * daysStaked) / 10000; 
+        reward = _amount *(ANNUAL_INTEREST_RATE ** daysStaked) / (100**daysStaked) / 10000; 
     }
 }
