@@ -5,6 +5,8 @@ import "../lib/solmate/src/tokens/ERC20.sol";
 import "../lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "../lib/openzeppelin-contracts/contracts/utils/Counters.sol";
 
+import "../lib/forge-std/src/console.sol";
+
 error InvalidAttackAmount(uint256 amount);
 error InvalidBalance();
 error CannotAttackThisAddress(address defender);
@@ -15,7 +17,7 @@ error UnderAttack(address trolled);
 contract Troll is ERC20, Ownable {
     // initialize war counter
     using Counters for Counters.Counter;
-    Counters.Counter internal warId;
+    Counters.Counter public warId;
 
     struct War {
         uint256 id;
@@ -32,17 +34,18 @@ contract Troll is ERC20, Ownable {
         uint256 startDefenseTime;
     }
 
-    //mapping of defense amounts for each user
+    // mapping of defense amounts for each user
     mapping(address => Defense) public defenses;
     //mapping of war structs by war id
-    mapping(uint256 => War) internal wars;
-    // mapping of wars per address
-    mapping(address => uint256[]) internal activeWars;
+    mapping(uint256 => War) public wars;
+    // mapping of wars being defended by eoa per address
+    mapping(address => uint256[]) public defending;
+    // mapping of wars eoa is attacker in.
+    mapping(address => uint256[]) public attacking;
     // immunity timer: if you lose a round you are immune from attack for 24 hours.
-    mapping(address => uint256) internal immunityTimer;
-    //mapping of addresses under attack
-    mapping(address => bool) internal underAttack;
+    mapping(address => uint256) public immunityTimer;
 
+    //solhint-disable-next-line
     uint256 internal ANNUAL_INTEREST_RATE;
 
     event Attacked(
@@ -51,18 +54,23 @@ contract Troll is ERC20, Ownable {
         address attacker,
         address defender
     );
+
     event Surrendered(
         uint256 warId,
-        address attacker,
-        address defender,
-        uint256 warPool
+        address loser,
+        uint256 warPool,
+        uint256 timestamp
     );
-    modifier peace(address defender) {
-        if (underAttack[defender] == true) {
+
+    modifier peaceTime(address defender) {
+        if (
+            defending[defender].length != 0 && attacking[defender].length != 0
+        ) {
             revert UnderAttack(defender);
         }
         _;
     }
+
     event DefensesSet(address defender, uint256 amount, uint256 timestamp);
 
     event DefensesUnset(address defender, uint256 reward, uint256 timestamp);
@@ -79,8 +87,9 @@ contract Troll is ERC20, Ownable {
     function startWar(
         address _defender,
         uint256 _amount
-    ) public peace(_defender) {
+    ) public peaceTime(_defender) {
         uint256 startTime = block.timestamp;
+        // check for immunities
         if (
             msg.sender == _defender ||
             _defender == address(0) ||
@@ -93,14 +102,14 @@ contract Troll is ERC20, Ownable {
             revert InvalidBalance();
         }
 
-        //check defender defense amount
+        // check defender defense amount
         if (_amount < defenses[_defender].amount) {
             revert InvalidAttackAmount(_amount);
         }
 
-        for (uint256 i = 0; i < activeWars[_defender].length; i++) {
+        for (uint256 i = 0; i < attacking[msg.sender].length; i++) {
             // you cannot attack someone who is attacking you, you must defend.
-            if (getWarById(activeWars[_defender][i]).defender == msg.sender)
+            if (getWarById(attacking[_defender][i]).defender == msg.sender)
                 revert CannotAttackThisAddress(_defender);
         }
 
@@ -108,15 +117,16 @@ contract Troll is ERC20, Ownable {
 
         // get defense amount
 
-        uint256 defenderPool = calculateReward(
+        uint256 defenderPool = _calculateReward(
             defenses[_defender].amount,
             defenses[_defender].startDefenseTime,
             startTime
         );
 
-        // reset defenses and make defender un attackable by anyone else.
+        // reset defenses
         delete defenses[_defender];
-        underAttack[_defender] = true;
+        defending[_defender].push(newWarId);
+        attacking[msg.sender].push(newWarId);
 
         // create new war
         War memory newWar;
@@ -136,19 +146,20 @@ contract Troll is ERC20, Ownable {
         emit Attacked(newWarId, startTime, msg.sender, _defender);
     }
 
-    function retaliate(
+    function battle(
         uint256 _warId,
-        uint256 _retaliationAmount
+        uint256 _attackPower
     ) public returns (uint256) {
-        // #TODO calculate retaliation amount according to round number and last amount
+        // #TODO calculate retaliation amount according to round number and last amount make sure that it's
+        // msg.senders' turn (even numbers = defeneder, odd numbers = attacker);
         //check that amount is greater than or equal to the require power and that user has available balance
     }
 
-    function calculateAttack(
-        uint256 _currentAmount,
-        uint256 roundNumber
-    ) public pure returns (uint256 requiredPower) {
-        requiredPower = _currentAmount + ((_currentAmount * roundNumber) / 10);
+    function _calculateAttack(
+        uint256 _poolAmount,
+        uint256 _roundNumber
+    ) internal pure returns (uint256 requiredPower) {
+        requiredPower = (_poolAmount * _roundNumber) / 10;
     }
 
     /**
@@ -156,34 +167,39 @@ contract Troll is ERC20, Ownable {
     have to stake more than this amount and will begin the battle at this amount
      */
 
-    function setDefenses(uint256 _amount) public {
-        if (balanceOf[msg.sender] <= _amount) {
+    function setDefenses(uint256 _amount) public peaceTime(msg.sender) {
+        if (
+            balanceOf[msg.sender] < _amount &&
+            allowance[msg.sender][address(this)] < _amount
+        ) {
             revert InvalidBalance();
-        }
-        if (underAttack[msg.sender]) {
-            revert UnderAttack(msg.sender);
         }
 
         uint256 timestamp = block.timestamp;
+
         Defense memory newDefense;
+
         newDefense.amount = _amount;
         newDefense.startDefenseTime = timestamp;
+
+        this.transferFrom(msg.sender, address(this), _amount);
+
         defenses[msg.sender] = newDefense;
-        transferFrom(msg.sender, address(this), _amount);
+
         emit DefensesSet(msg.sender, _amount, timestamp);
     }
 
     /** 
     @dev this will allow someone with defenses staked to unstake their defenses and collect their staking rewards
      */
-    function unsetDefenses() public {
+    function unsetDefenses() public peaceTime(msg.sender) {
         uint256 amount = defenses[msg.sender].amount;
-        if (amount == 0 || underAttack[msg.sender]) {
+        if (amount == 0) {
             revert InvalidDefender();
         }
         uint256 endTimestamp = block.timestamp;
         // calculate and mint staking rewards
-        uint256 reward = calculateReward(
+        uint256 reward = _calculateReward(
             amount,
             defenses[msg.sender].startDefenseTime,
             endTimestamp
@@ -195,6 +211,7 @@ contract Troll is ERC20, Ownable {
         _mint(msg.sender, (reward - amount));
         // delete defense mapping.
         delete defenses[msg.sender];
+
         emit DefensesUnset(msg.sender, reward, endTimestamp);
     }
 
@@ -205,7 +222,7 @@ contract Troll is ERC20, Ownable {
         war = wars[_warId];
     }
 
-    function calculateReward(
+    function _calculateReward(
         uint256 _amount,
         uint256 _startTimestamp,
         uint256 _endTimestamp
@@ -222,10 +239,7 @@ contract Troll is ERC20, Ownable {
     function transfer(
         address to,
         uint256 amount
-    ) public override returns (bool) {
-        if (underAttack[msg.sender] == true) {
-            revert UnderAttack(msg.sender);
-        }
+    ) public override peaceTime(msg.sender) returns (bool) {
         return super.transfer(to, amount);
     }
 
@@ -233,14 +247,12 @@ contract Troll is ERC20, Ownable {
         address from,
         address to,
         uint256 amount
-    ) public override returns (bool) {
-        if (underAttack[from] == true) {
-            revert UnderAttack(from);
-        }
+    ) public override peaceTime(from) returns (bool) {
         return super.transferFrom(from, to, amount);
     }
 
-    /** @dev OnlyOwner functions */
+    ////////////////////////////// OnlyOwner functions ///////////////////////
+
     function setImmunityTimer(
         address _immunized,
         uint256 _endTimeStamp
@@ -250,5 +262,9 @@ contract Troll is ERC20, Ownable {
 
     function setInterestRate(uint256 _newRate) external onlyOwner {
         ANNUAL_INTEREST_RATE = _newRate;
+    }
+
+    function mint(address to, uint256 _amount) public {
+        _mint(to, _amount);
     }
 }
