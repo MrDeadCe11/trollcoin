@@ -3,7 +3,8 @@ pragma solidity ^0.8.18;
 
 import "../lib/solmate/src/tokens/ERC20.sol";
 import "../lib/openzeppelin-contracts/contracts/access/Ownable.sol";
-import "../lib/openzeppelin-contracts/contracts/utils/Counters.sol";
+
+import {TrollCoinDistributionManager} from "./TrollCoinDistributionManager.sol";
 
 import "../lib/forge-std/src/console.sol";
 
@@ -13,11 +14,13 @@ error CannotAttackThisAddress(address defender);
 error InvalidId();
 error InvalidDefender();
 error UnderAttack(address trolled);
+error InvalidTimestamp();
 
-contract Troll is ERC20, Ownable {
+contract Troll is ERC20, Ownable, TrollCoinDistributionManager {
     // initialize war counter
-    using Counters for Counters.Counter;
-    Counters.Counter public warId;
+    uint256 public warId;
+
+    uint8 public constant PRECISION = 18;
 
     struct War {
         uint256 id;
@@ -79,7 +82,7 @@ contract Troll is ERC20, Ownable {
         uint256 _initialSupply,
         uint256 _stakingReward
     ) ERC20("Troll", "TROLOLOL", 18) {
-        warId.increment();
+        warId++;
         _mint(msg.sender, _initialSupply);
         ANNUAL_INTEREST_RATE = _stakingReward;
     }
@@ -113,7 +116,7 @@ contract Troll is ERC20, Ownable {
                 revert CannotAttackThisAddress(_defender);
         }
 
-        uint256 newWarId = warId.current();
+        uint256 newWarId = warId;
 
         // get defense amount
 
@@ -141,7 +144,7 @@ contract Troll is ERC20, Ownable {
         //transfer attacking amount to contract
         transferFrom(msg.sender, address(this), _amount);
 
-        warId.increment();
+        warId++;
 
         emit Attacked(newWarId, startTime, msg.sender, _defender);
     }
@@ -192,7 +195,7 @@ contract Troll is ERC20, Ownable {
     /** 
     @dev this will allow someone with defenses staked to unstake their defenses and collect their staking rewards
      */
-    function unsetDefenses() public peaceTime(msg.sender) {
+    function unsetDefenses() public peaceTime(msg.sender) returns (bool) {
         uint256 amount = defenses[msg.sender].amount;
         if (amount == 0) {
             revert InvalidDefender();
@@ -205,35 +208,22 @@ contract Troll is ERC20, Ownable {
             endTimestamp
         );
 
-        // transfer original stake
-        require(transfer(msg.sender, amount), "unable to unstake");
-        // mint reward
-        _mint(msg.sender, (reward - amount));
-        // delete defense mapping.
-        delete defenses[msg.sender];
+        // _mint(address(this), (reward - amount));
+        // // transfer original stake
+        // require(this.transfer(msg.sender, reward), "unable to unstake");
 
-        emit DefensesUnset(msg.sender, reward, endTimestamp);
+        // // delete defense mapping.
+        // delete defenses[msg.sender];
+
+        // emit DefensesUnset(msg.sender, reward, endTimestamp);
+        return true;
     }
 
     function getWarById(uint256 _warId) public view returns (War memory war) {
-        if (warId.current() <= _warId) {
+        if (warId <= _warId) {
             revert InvalidId();
         }
         war = wars[_warId];
-    }
-
-    function _calculateReward(
-        uint256 _amount,
-        uint256 _startTimestamp,
-        uint256 _endTimestamp
-    ) internal view returns (uint256 reward) {
-        // uint256 dailyInterestRate = ANNUAL_INTEREST_RATE / 365;
-        uint256 daysStaked = (_endTimestamp - _startTimestamp) / 60 / 60 / 24;
-        // Divide by 10,000 to account for the percentage
-        reward =
-            (_amount * (ANNUAL_INTEREST_RATE ** daysStaked)) /
-            (100 ** daysStaked) /
-            10000;
     }
 
     function transfer(
