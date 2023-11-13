@@ -6,35 +6,21 @@ import "../lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 
 import {TrollCoinDistributionManager} from "./TrollCoinDistributionManager.sol";
 
-import "../lib/forge-std/src/console.sol";
+import "../lib/forge-std/src/console2.sol";
 
-error InvalidAttackAmount(uint256 amount);
-error InvalidBalance();
-error CannotAttackThisAddress(address defender);
-error InvalidId();
-error InvalidDefender();
-error UnderAttack(address trolled);
-error InvalidTimestamp();
-
-contract Troll is ERC20, Ownable, TrollCoinDistributionManager {
+contract TrollCoin is ERC20, Ownable, TrollCoinDistributionManager {
     // initialize war counter
     uint256 public warId;
-
-    uint8 public constant PRECISION = 18;
 
     struct War {
         uint256 id;
         uint256 startTime;
+        uint256 endTime;
         uint256 round;
         address attacker;
         address defender;
         address loser;
         uint256 warPool;
-    }
-
-    struct Defense {
-        uint256 amount;
-        uint256 startDefenseTime;
     }
 
     // mapping of defense amounts for each user
@@ -45,7 +31,7 @@ contract Troll is ERC20, Ownable, TrollCoinDistributionManager {
     mapping(address => uint256[]) public defending;
     // mapping of wars eoa is attacker in.
     mapping(address => uint256[]) public attacking;
-    // immunity timer: if you lose a round you are immune from attack for 24 hours.
+    // immunity timer: if you lose a round you are immune from attack in proportion to the amount of tokens lost.
     mapping(address => uint256) public immunityTimer;
 
     //solhint-disable-next-line
@@ -82,9 +68,8 @@ contract Troll is ERC20, Ownable, TrollCoinDistributionManager {
         uint256 _initialSupply,
         uint256 _stakingReward
     ) ERC20("Troll", "TROLOLOL", 18) {
-        warId++;
         _mint(msg.sender, _initialSupply);
-        ANNUAL_INTEREST_RATE = _stakingReward;
+        emissionsPerSecond = _stakingReward;
     }
 
     function startWar(
@@ -106,7 +91,7 @@ contract Troll is ERC20, Ownable, TrollCoinDistributionManager {
         }
 
         // check defender defense amount
-        if (_amount < defenses[_defender].amount) {
+        if (_amount < defenses[_defender].totalDefense) {
             revert InvalidAttackAmount(_amount);
         }
 
@@ -120,11 +105,7 @@ contract Troll is ERC20, Ownable, TrollCoinDistributionManager {
 
         // get defense amount
 
-        uint256 defenderPool = _calculateReward(
-            defenses[_defender].amount,
-            defenses[_defender].startDefenseTime,
-            startTime
-        );
+        uint256 defenderPool = _calculateCurrentReward(defenses[_defender]);
 
         // reset defenses
         delete defenses[_defender];
@@ -155,7 +136,7 @@ contract Troll is ERC20, Ownable, TrollCoinDistributionManager {
     ) public returns (uint256) {
         // #TODO calculate retaliation amount according to round number and last amount make sure that it's
         // msg.senders' turn (even numbers = defeneder, odd numbers = attacker);
-        //check that amount is greater than or equal to the require power and that user has available balance
+        // check that amount is greater than or equal to the require power and that user has available balance
     }
 
     function _calculateAttack(
@@ -182,10 +163,11 @@ contract Troll is ERC20, Ownable, TrollCoinDistributionManager {
 
         Defense memory newDefense;
 
-        newDefense.amount = _amount;
-        newDefense.startDefenseTime = timestamp;
+        newDefense.totalDefense = _amount;
+        newDefense.startDefenseTimestamp = timestamp;
+        newDefense.totalSupplyAtTimeOfDefense = totalSupply;
 
-        this.transferFrom(msg.sender, address(this), _amount);
+        transferFrom(msg.sender, address(this), _amount);
 
         defenses[msg.sender] = newDefense;
 
@@ -195,28 +177,23 @@ contract Troll is ERC20, Ownable, TrollCoinDistributionManager {
     /** 
     @dev this will allow someone with defenses staked to unstake their defenses and collect their staking rewards
      */
-    function unsetDefenses() public peaceTime(msg.sender) returns (bool) {
-        uint256 amount = defenses[msg.sender].amount;
-        if (amount == 0) {
+    function unsetDefenses() public peaceTime(msg.sender) {
+        uint256 totalDefense = defenses[msg.sender].totalDefense;
+        if (totalDefense == 0) {
             revert InvalidDefender();
         }
-        uint256 endTimestamp = block.timestamp;
+
         // calculate and mint staking rewards
-        uint256 reward = _calculateReward(
-            amount,
-            defenses[msg.sender].startDefenseTime,
-            endTimestamp
-        );
+        uint256 reward = _calculateCurrentReward(defenses[msg.sender]);
 
-        // _mint(address(this), (reward - amount));
-        // // transfer original stake
-        // require(this.transfer(msg.sender, reward), "unable to unstake");
+        // transfer original stake
+        require(this.transfer(msg.sender, reward), "unable to unstake");
 
-        // // delete defense mapping.
-        // delete defenses[msg.sender];
+        _mint(msg.sender, (reward));
+        // delete defense mapping.
+        delete defenses[msg.sender];
 
-        // emit DefensesUnset(msg.sender, reward, endTimestamp);
-        return true;
+        emit DefensesUnset(msg.sender, reward, block.timestamp);
     }
 
     function getWarById(uint256 _warId) public view returns (War memory war) {
@@ -254,7 +231,16 @@ contract Troll is ERC20, Ownable, TrollCoinDistributionManager {
         ANNUAL_INTEREST_RATE = _newRate;
     }
 
-    function mint(address to, uint256 _amount) public {
-        _mint(to, _amount);
+    function mint(address to, uint256 amount) public {
+        totalSupply += amount;
+        _mint(to, amount);
+    }
+
+    function burn(address to, uint256 amount) public {
+        if (msg.sender != to) {
+            revert InvalidCaller();
+        }
+        totalSupply -= amount;
+        _burn(to, amount);
     }
 }

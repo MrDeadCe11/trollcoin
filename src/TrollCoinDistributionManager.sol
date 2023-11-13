@@ -1,290 +1,48 @@
-// SPDX-License-Identifier: agpl-3.0
-pragma solidity 0.7.5;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.18;
 pragma experimental ABIEncoderV2;
 
-import {SafeMath} from "../lib/SafeMath.sol";
-import {DistributionTypes} from "../lib/DistributionTypes.sol";
-import {IAaveDistributionManager} from "../interfaces/IAaveDistributionManager.sol";
+import {Errors} from "./lib/Errors.sol";
+
+import "forge-std/console2.sol";
 
 /**
  * @title TrollCoinDistributionManager
  * @notice Accounting contract to manage staking distributions
- * @author Aave
+ * @author MrDeadCe11
  **/
-contract TrollCoinDistributionManager {
-    using SafeMath for uint256;
 
-    struct AssetData {
-        uint128 emissionPerSecond;
-        uint128 lastUpdateTimestamp;
-        uint256 index;
-        mapping(address => uint256) users;
+abstract contract TrollCoinDistributionManager is Errors {
+    /// @notice The constant that represents percentage points for calculations.
+    uint256 public constant PERC_POINTS = 1e6;
+
+    /// @notice The emissions per second, set at 20% (20,000 out of a million).
+    uint256 public apy = 20_000;
+
+    uint256 public constant PRECISION = 1e18;
+    // (seconds per year / percentage points) * APY
+    uint256 public emissionsPerSecond = (31536000 / PERC_POINTS) * apy;
+
+    event APYAdjusted(uint256);
+
+    struct Defense {
+        uint256 totalDefense;
+        uint256 startDefenseTimestamp;
+        uint256 totalSupplyAtTimeOfDefense;
     }
 
-    uint256 public immutable DISTRIBUTION_END;
-
-    address public immutable EMISSION_MANAGER;
-
-    uint8 public constant PRECISION = 18;
-
-    mapping(address => AssetData) public assets;
-
-    event AssetConfigUpdated(address indexed asset, uint256 emission);
-    event AssetIndexUpdated(address indexed asset, uint256 index);
-    event UserIndexUpdated(
-        address indexed user,
-        address indexed asset,
-        uint256 index
-    );
-
-    constructor(address emissionManager, uint256 distributionDuration) public {
-        DISTRIBUTION_END = block.timestamp.add(distributionDuration);
-        EMISSION_MANAGER = emissionManager;
-    }
-
-    function _calculateReward(
-        uint256 _amount,
-        uint256 _startTimestamp,
-        uint256 _endTimestamp
+    function _calculateCurrentReward(
+        Defense memory _defense
     ) internal view returns (uint256 reward) {
-        console.log("AMOUNT STAKED", _amount);
-        //#TODO fix reward calculation currently returns 0
-        if (_endTimestamp <= _startTimestamp) revert InvalidTimestamp();
-        // uint256 dailyInterestRate = ANNUAL_INTEREST_RATE / 365;
-        console.log("TIMESTAMPS", _startTimestamp, _endTimestamp);
-        uint256 timeStaked = (_endTimestamp - _startTimestamp); // 60 / 60 / 24;
-        console.log("daysStaked", timeStaked);
-        // Divide by 10,000 to account for the percentage
-        reward = (_amount * timeStaked * ANNUAL_INTEREST_RATE) / 10_000;
+        uint256 timeDelta = (block.timestamp - _defense.startDefenseTimestamp);
 
-        console.log("REWARD: ", reward);
+        reward = (_defense.totalDefense *
+            ((timeDelta * emissionsPerSecond * PRECISION) /
+                _defense.totalSupplyAtTimeOfDefense));
     }
 
-    /**
-     * @dev Configures the distribution of rewards for a list of assets
-     * @param assetsConfigInput The list of configurations to apply
-     **/
-    function configureAssets(
-        DistributionTypes.AssetConfigInput[] calldata assetsConfigInput
-    ) external override {
-        require(msg.sender == EMISSION_MANAGER, "ONLY_EMISSION_MANAGER");
-
-        for (uint256 i = 0; i < assetsConfigInput.length; i++) {
-            AssetData storage assetConfig = assets[
-                assetsConfigInput[i].underlyingAsset
-            ];
-
-            _updateAssetStateInternal(
-                assetsConfigInput[i].underlyingAsset,
-                assetConfig,
-                assetsConfigInput[i].totalStaked
-            );
-
-            assetConfig.emissionPerSecond = assetsConfigInput[i]
-                .emissionPerSecond;
-
-            emit AssetConfigUpdated(
-                assetsConfigInput[i].underlyingAsset,
-                assetsConfigInput[i].emissionPerSecond
-            );
-        }
-    }
-
-    /**
-     * @dev Updates the state of one distribution, mainly rewards index and timestamp
-     * @param underlyingAsset The address used as key in the distribution, for example
-     * sAAVE or the aTokens addresses on Aave
-     * @param assetConfig Storage pointer to the distribution's config
-     * @param totalStaked Current total of staked assets for this distribution
-     * @return The new distribution index
-     **/
-    function _updateAssetStateInternal(
-        address underlyingAsset,
-        AssetData storage assetConfig,
-        uint256 totalStaked
-    ) internal returns (uint256) {
-        uint256 oldIndex = assetConfig.index;
-        uint128 lastUpdateTimestamp = assetConfig.lastUpdateTimestamp;
-
-        if (block.timestamp == lastUpdateTimestamp) {
-            return oldIndex;
-        }
-
-        uint256 newIndex = _getAssetIndex(
-            oldIndex,
-            assetConfig.emissionPerSecond,
-            lastUpdateTimestamp,
-            totalStaked
-        );
-
-        if (newIndex != oldIndex) {
-            assetConfig.index = newIndex;
-            emit AssetIndexUpdated(underlyingAsset, newIndex);
-        }
-
-        assetConfig.lastUpdateTimestamp = uint128(block.timestamp);
-
-        return newIndex;
-    }
-
-    /**
-     * @dev Updates the state of an user in a distribution
-     * @param user The user's address
-     * @param asset The address of the reference asset of the distribution
-     * @param stakedByUser Amount of tokens staked by the user in the distribution at the moment
-     * @param totalStaked Total tokens staked in the distribution
-     * @return The accrued rewards for the user until the moment
-     **/
-    function _updateUserAssetInternal(
-        address user,
-        address asset,
-        uint256 stakedByUser,
-        uint256 totalStaked
-    ) internal returns (uint256) {
-        AssetData storage assetData = assets[asset];
-        uint256 userIndex = assetData.users[user];
-        uint256 accruedRewards = 0;
-
-        uint256 newIndex = _updateAssetStateInternal(
-            asset,
-            assetData,
-            totalStaked
-        );
-
-        if (userIndex != newIndex) {
-            if (stakedByUser != 0) {
-                accruedRewards = _getRewards(stakedByUser, newIndex, userIndex);
-            }
-
-            assetData.users[user] = newIndex;
-            emit UserIndexUpdated(user, asset, newIndex);
-        }
-
-        return accruedRewards;
-    }
-
-    /**
-     * @dev Used by "frontend" stake contracts to update the data of an user when claiming rewards from there
-     * @param user The address of the user
-     * @param stakes List of structs of the user data related with his stake
-     * @return The accrued rewards for the user until the moment
-     **/
-    function _claimRewards(
-        address user,
-        DistributionTypes.UserStakeInput[] memory stakes
-    ) internal returns (uint256) {
-        uint256 accruedRewards = 0;
-
-        for (uint256 i = 0; i < stakes.length; i++) {
-            accruedRewards = accruedRewards.add(
-                _updateUserAssetInternal(
-                    user,
-                    stakes[i].underlyingAsset,
-                    stakes[i].stakedByUser,
-                    stakes[i].totalStaked
-                )
-            );
-        }
-
-        return accruedRewards;
-    }
-
-    /**
-     * @dev Return the accrued rewards for an user over a list of distribution
-     * @param user The address of the user
-     * @param stakes List of structs of the user data related with his stake
-     * @return The accrued rewards for the user until the momecurrentIndexnt
-     **/
-    function _getUnclaimedRewards(
-        address user,
-        DistributionTypes.UserStakeInput[] memory stakes
-    ) internal view returns (uint256) {
-        uint256 accruedRewards = 0;
-
-        for (uint256 i = 0; i < stakes.length; i++) {
-            AssetData storage assetConfig = assets[stakes[i].underlyingAsset];
-            uint256 assetIndex = _getAssetIndex(
-                assetConfig.index,
-                assetConfig.emissionPerSecond,
-                assetConfig.lastUpdateTimestamp,
-                stakes[i].totalStaked
-            );
-
-            accruedRewards = accruedRewards.add(
-                _getRewards(
-                    stakes[i].stakedByUser,
-                    assetIndex,
-                    assetConfig.users[user]
-                )
-            );
-        }
-        return accruedRewards;
-    }
-
-    /**
-     * @dev Internal function for the calculation of user's rewards on a distribution
-     * @param principalUserBalance Amount staked by the user on a distribution
-     * @param reserveIndex Current index of the distribution
-     * @param userIndex Index stored for the user, representation his staking moment
-     * @return The rewards
-     **/
-    function _getRewards(
-        uint256 principalUserBalance,
-        uint256 reserveIndex,
-        uint256 userIndex
-    ) internal pure returns (uint256) {
-        return
-            principalUserBalance.mul(reserveIndex.sub(userIndex)).div(
-                10 ** uint256(PRECISION)
-            );
-    }
-
-    /**
-     * @dev Calculates the next value of an specific distribution index, with validations
-     * @param currentIndex Current index of the distribution
-     * @param emissionPerSecond Representing the total rewards distributed per
-     * second per asset unit, on the distribution
-     * @param lastUpdateTimestamp Last moment this distribution was updated
-     * @param totalBalance of tokens considered for the distribution
-     * @return The new index.
-     **/
-    function _getAssetIndex(
-        uint256 currentIndex,
-        uint256 emissionPerSecond,
-        uint128 lastUpdateTimestamp,
-        uint256 totalBalance
-    ) internal view returns (uint256) {
-        if (
-            emissionPerSecond == 0 ||
-            totalBalance == 0 ||
-            lastUpdateTimestamp == block.timestamp ||
-            lastUpdateTimestamp >= DISTRIBUTION_END
-        ) {
-            return currentIndex;
-        }
-
-        uint256 currentTimestamp = block.timestamp > DISTRIBUTION_END
-            ? DISTRIBUTION_END
-            : block.timestamp;
-        uint256 timeDelta = currentTimestamp.sub(lastUpdateTimestamp);
-        return
-            emissionPerSecond
-                .mul(timeDelta)
-                .mul(10 ** uint256(PRECISION))
-                .div(totalBalance)
-                .add(currentIndex);
-    }
-
-    /**
-     * @dev Returns the data of an user on a distribution
-     * @param user Address of the user
-     * @param asset The address of the reference asset of the distribution
-     * @return The new index
-     **/
-    function getUserAssetData(
-        address user,
-        address asset
-    ) public view returns (uint256) {
-        return assets[asset].users[user];
+    function _adjustAPY(uint256 _newApy) internal {
+        apy = _newApy;
+        emit APYAdjusted(_newApy);
     }
 }

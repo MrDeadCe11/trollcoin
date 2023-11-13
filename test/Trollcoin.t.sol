@@ -2,17 +2,16 @@
 pragma solidity ^0.8.18;
 
 import "forge-std/Test.sol";
-import {Troll} from "../Trollcoin.sol";
+import {TrollCoin} from "../src/Trollcoin.sol";
 
 contract TrollcoinTest is Test {
-    Troll public trollcoin;
+    TrollCoin public trollcoin;
 
     struct Defense {
         uint256 amount;
         uint256 startDefenseTime;
     }
 
-    address public me = address(this);
     address public constant DEPLOYER = address(1);
     address public constant ATTACKER = address(0xBEEF);
     address public constant DEFENDER = address(0xDEAD);
@@ -22,7 +21,7 @@ contract TrollcoinTest is Test {
 
     function setUp() public {
         vm.startPrank(DEPLOYER);
-        trollcoin = new Troll(TOTAL_SUPPLY, 800);
+        trollcoin = new TrollCoin(TOTAL_SUPPLY, 800);
         trollcoin.transfer(DEFENDER, 10000000);
         trollcoin.transfer(ATTACKER, 10000000);
     }
@@ -65,7 +64,7 @@ contract TrollcoinTest is Test {
         trollcoin.setDefenses(100);
         vm.stopPrank();
 
-        (uint256 amount, ) = trollcoin.defenses(DEFENDER);
+        (uint256 amount, , ) = trollcoin.defenses(DEFENDER);
         assertEq(amount, 100);
         assertEq(trollcoin.balanceOf(DEFENDER), (balance - 100));
     }
@@ -73,9 +72,10 @@ contract TrollcoinTest is Test {
     function testUnsetDefenses() public {
         setUpDefenses(DEFENDER, 100);
         assertEq(trollcoin.balanceOf(address(trollcoin)), 100);
-        vm.warp(2603000);1000
+        vm.warp(2603000);
         vm.prank(DEFENDER);
-        assertTrue(trollcoin.unsetDefenses());
+        trollcoin.unsetDefenses();
+        assertEq(trollcoin.balanceOf(DEFENDER), 1200);
     }
 
     function setUpDefenses(address _account, uint256 _amount) public {
